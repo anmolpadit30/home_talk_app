@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">HomeTalk</string>
+    <string name="notification_channel_name">HomeTalk status</string>
+    <string name="notification_channel_description">Shows connection status and Talk controls while HomeTalk runs in the background.</string>
+    <string name="notification_title">HomeTalk</string>
+    <string name="notification_action_talk">Talk</string>
+    <string name="notification_action_stop">Stop</string>
+    <string name="notification_action_mute">Mute</string>
+    <string name="notification_action_unmute">Unmute</string>
+    <string name="notification_action_open">Open</string>
+    <string name="service_running">HomeTalk is listening on your home Wi-Fi</string>
+</resources>
