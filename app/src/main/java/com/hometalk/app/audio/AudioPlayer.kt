@@ -2,11 +2,9 @@ package com.hometalk.app.audio
 
 import android.content.Context
 import android.media.AudioAttributes
-import android.media.AudioDeviceInfo
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
-import android.os.Build
 import com.hometalk.app.domain.model.NetworkDefaults
 import com.hometalk.app.util.HomeTalkLog
 import com.hometalk.app.util.LogArea
@@ -33,8 +31,8 @@ class AudioPlayer @Inject constructor(
         }
         val bufferSize = maxOf(minBuffer, frameSize * 2 * 8)
         return try {
-            // USAGE_MEDIA plays on the loudspeaker by default. VOICE_COMMUNICATION
-            // tends to route to the earpiece on many OEMs.
+            // USAGE_MEDIA + MODE_NORMAL loudspeaker path. Do not pin preferredDevice —
+            // that silenced playback on several OEM builds.
             val track = AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
@@ -52,10 +50,9 @@ class AudioPlayer @Inject constructor(
                 .setBufferSizeInBytes(bufferSize)
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
-            routeToBuiltinSpeaker(track)
             track.play()
             audioTrack = track
-            HomeTalkLog.i(LogArea.AUDIO, "AudioTrack started on loudspeaker buffer=$bufferSize")
+            HomeTalkLog.i(LogArea.AUDIO, "AudioTrack started buffer=$bufferSize")
             true
         } catch (error: Exception) {
             HomeTalkLog.e(LogArea.AUDIO, "AudioTrack start failed", error)
@@ -64,14 +61,46 @@ class AudioPlayer @Inject constructor(
     }
 
     fun ensureLoudspeaker() {
-        val track = audioTrack ?: return
-        routeToBuiltinSpeaker(track)
+        try {
+            @Suppress("DEPRECATION")
+            audioManager.isSpeakerphoneOn = true
+        } catch (error: Exception) {
+            HomeTalkLog.w(LogArea.AUDIO, "Speakerphone toggle failed", error)
+        }
+    }
+
+    /** @return false if the track is missing or cannot be resumed. */
+    fun ensurePlaying(): Boolean {
+        val track = audioTrack ?: return false
+        return try {
+            if (track.state != AudioTrack.STATE_INITIALIZED) return false
+            if (track.playState != AudioTrack.PLAYSTATE_PLAYING) {
+                track.play()
+            }
+            track.playState == AudioTrack.PLAYSTATE_PLAYING
+        } catch (error: Exception) {
+            HomeTalkLog.w(LogArea.AUDIO, "AudioTrack resume failed", error)
+            false
+        }
+    }
+
+    /** OEMs often pause a silent MEDIA track after long screen-off — rebuild. */
+    fun forceRebuild(): Boolean {
+        HomeTalkLog.i(LogArea.AUDIO, "AudioTrack force rebuild")
+        return start()
     }
 
     fun write(pcm: ShortArray, length: Int) {
-        val track = audioTrack ?: return
         if (length <= 0) return
-        track.write(pcm, 0, length)
+        val track = audioTrack ?: return
+        if (track.playState != AudioTrack.PLAYSTATE_PLAYING) {
+            runCatching { track.play() }
+        }
+        val written = track.write(pcm, 0, length)
+        if (written < 0) {
+            HomeTalkLog.w(LogArea.AUDIO, "AudioTrack write error=$written — restarting")
+            start()
+        }
     }
 
     fun setVolume(volume: Float) {
@@ -92,19 +121,5 @@ class AudioPlayer @Inject constructor(
         } catch (_: Exception) {
         }
         HomeTalkLog.i(LogArea.AUDIO, "AudioTrack stopped")
-    }
-
-    private fun routeToBuiltinSpeaker(track: AudioTrack) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
-        val speaker = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
-            .firstOrNull { device ->
-                device.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
-            }
-        if (speaker != null) {
-            val ok = track.setPreferredDevice(speaker)
-            HomeTalkLog.d(LogArea.AUDIO, "Preferred loudspeaker set=$ok id=${speaker.id}")
-        } else {
-            HomeTalkLog.w(LogArea.AUDIO, "Built-in loudspeaker device not found")
-        }
     }
 }

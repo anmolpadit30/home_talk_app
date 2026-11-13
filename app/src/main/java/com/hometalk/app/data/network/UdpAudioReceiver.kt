@@ -11,8 +11,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.net.DatagramPacket
 import java.net.DatagramSocket
-import java.net.SocketException
-import java.util.concurrent.atomic.AtomicBoolean
+import java.net.SocketTimeoutException
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -22,7 +21,8 @@ fun interface AudioPacketListener {
 
 @Singleton
 class UdpAudioReceiver @Inject constructor() {
-    private val running = AtomicBoolean(false)
+    private val lock = Any()
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var socket: DatagramSocket? = null
     private var job: Job? = null
     private var listener: AudioPacketListener? = null
@@ -32,42 +32,87 @@ class UdpAudioReceiver @Inject constructor() {
     }
 
     fun start() {
-        if (!running.compareAndSet(false, true)) return
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+        synchronized(lock) {
+            if (job?.isActive == true && socket?.isClosed == false) return
+            startLocked()
+        }
+    }
+
+    fun restart() {
+        synchronized(lock) {
+            HomeTalkLog.i(LogArea.NETWORK, "UDP audio receiver restart")
+            stopLocked()
+            startLocked()
+        }
+    }
+
+    fun stop() {
+        synchronized(lock) {
+            stopLocked()
+            HomeTalkLog.i(LogArea.NETWORK, "UDP audio receiver stopped")
+        }
+    }
+
+    /** True when a live socket is accepting datagrams. */
+    fun isListening(): Boolean = synchronized(lock) {
+        job?.isActive == true && socket?.isClosed == false
+    }
+
+    private fun stopLocked() {
+        val oldSocket = socket
+        socket = null
+        job?.cancel()
+        job = null
+        try {
+            oldSocket?.close()
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun startLocked() {
+        val local = try {
+            DatagramSocket(NetworkDefaults.UDP_AUDIO_PORT).apply {
+                reuseAddress = true
+                // Wake the receive loop so OEM freezes / cancelled jobs exit promptly.
+                soTimeout = 5_000
+            }
+        } catch (error: Exception) {
+            HomeTalkLog.e(LogArea.NETWORK, "UDP receiver failed to bind", error)
+            return
+        }
+        socket = local
         job = scope.launch {
+            HomeTalkLog.i(LogArea.NETWORK, "UDP audio listening on ${NetworkDefaults.UDP_AUDIO_PORT}")
+            val buffer = ByteArray(PacketProtocol.HEADER_SIZE + PacketProtocol.MAX_PAYLOAD)
             try {
-                val local = DatagramSocket(NetworkDefaults.UDP_AUDIO_PORT)
-                socket = local
-                HomeTalkLog.i(LogArea.NETWORK, "UDP audio listening on ${NetworkDefaults.UDP_AUDIO_PORT}")
-                val buffer = ByteArray(PacketProtocol.HEADER_SIZE + PacketProtocol.MAX_PAYLOAD)
-                while (isActive && running.get()) {
+                while (isActive) {
+                    // Bail if a newer start/restart replaced this socket.
+                    if (socket !== local || local.isClosed) break
                     try {
                         val datagram = DatagramPacket(buffer, buffer.size)
                         local.receive(datagram)
                         val packet = PacketProtocol.decode(datagram.data, datagram.length) ?: continue
                         listener?.onAudioPacket(packet)
-                    } catch (_: SocketException) {
-                        break
+                    } catch (_: SocketTimeoutException) {
+                        // Expected — keeps the loop alive under deep sleep.
                     } catch (error: Exception) {
+                        if (!isActive || socket !== local || local.isClosed) break
                         HomeTalkLog.w(LogArea.NETWORK, "UDP receive error", error)
                     }
                 }
-            } catch (error: Exception) {
-                HomeTalkLog.e(LogArea.NETWORK, "UDP receiver failed to bind", error)
-                running.set(false)
+            } finally {
+                try {
+                    local.close()
+                } catch (_: Exception) {
+                }
+                synchronized(lock) {
+                    // Never close/null a newer socket started by a concurrent restart.
+                    if (socket === local) {
+                        socket = null
+                    }
+                }
+                HomeTalkLog.i(LogArea.NETWORK, "UDP receive loop exited")
             }
         }
-    }
-
-    fun stop() {
-        if (!running.compareAndSet(true, false)) return
-        try {
-            socket?.close()
-        } catch (_: Exception) {
-        }
-        socket = null
-        job?.cancel()
-        job = null
-        HomeTalkLog.i(LogArea.NETWORK, "UDP audio receiver stopped")
     }
 }

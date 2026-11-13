@@ -12,6 +12,7 @@ import com.hometalk.app.domain.model.UserSettings
 import com.hometalk.app.domain.repository.DiscoveryController
 import com.hometalk.app.domain.repository.DeviceRegistryRepository
 import com.hometalk.app.domain.repository.SettingsRepository
+import com.hometalk.app.domain.repository.TalkController
 import com.hometalk.app.util.HomeTalkLog
 import com.hometalk.app.util.LogArea
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -37,6 +38,7 @@ data class DevicesUiState(
     val manualPinInput: String = "",
     val actionMessage: String? = null,
     val isBusy: Boolean = false,
+    val talkingToDeviceId: String? = null,
 )
 
 @HiltViewModel
@@ -44,6 +46,7 @@ class DevicesViewModel @Inject constructor(
     deviceRegistryRepository: DeviceRegistryRepository,
     private val discoveryController: DiscoveryController,
     private val settingsRepository: SettingsRepository,
+    private val talkController: TalkController,
 ) : ViewModel() {
 
     private val pairPinInput = MutableStateFlow("")
@@ -68,11 +71,16 @@ class DevicesViewModel @Inject constructor(
         ) { pin, pairTarget, manualVisible, manualHost, manualPin ->
             DialogSlice(pin, pairTarget, manualVisible, manualHost, manualPin)
         },
-        combine(actionMessage, isBusy, localSettings) { message, busy, settings ->
-            Triple(message, busy, settings)
+        combine(
+            actionMessage,
+            isBusy,
+            localSettings,
+            talkController.talkingToDeviceId,
+        ) { message, busy, settings, talkingTo ->
+            ExtrasSlice(message, busy, settings, talkingTo)
         },
     ) { devices, session, status, dialogs, extras ->
-        val settings = extras.third
+        val settings = extras.settings
         DevicesUiState(
             devices = devices.sortedWith(
                 compareByDescending<Device> { it.isOnline }
@@ -83,26 +91,29 @@ class DevicesViewModel @Inject constructor(
             pairingSession = session,
             pairingQrPayload = session?.let { active ->
                 val host = active.localHostAddress ?: return@let null
-                PairingQrCodec.encode(
-                    PairingQrPayload(
-                        protocolVersion = NetworkDefaults.PROTOCOL_VERSION.toInt(),
-                        deviceId = settings.deviceId,
-                        deviceName = settings.deviceName,
-                        roomId = settings.roomId,
-                        roomName = settings.roomName,
-                        hostAddress = host,
-                        controlPort = active.controlPort,
-                        pin = active.pin,
-                    ),
-                )
+                runCatching {
+                    PairingQrCodec.encode(
+                        PairingQrPayload(
+                            protocolVersion = NetworkDefaults.PROTOCOL_VERSION.toInt(),
+                            deviceId = settings.deviceId,
+                            deviceName = settings.deviceName,
+                            roomId = settings.roomId,
+                            roomName = settings.roomName,
+                            hostAddress = host,
+                            controlPort = active.controlPort,
+                            pin = active.pin,
+                        ),
+                    )
+                }.getOrNull()
             },
             showPairDialogFor = dialogs.pairTarget,
             pairPinInput = dialogs.pin,
             showManualPairDialog = dialogs.manualVisible,
             manualHostInput = dialogs.manualHost,
             manualPinInput = dialogs.manualPin,
-            actionMessage = extras.first,
-            isBusy = extras.second,
+            actionMessage = extras.message,
+            isBusy = extras.busy,
+            talkingToDeviceId = extras.talkingToDeviceId,
         )
     }.stateIn(
         scope = viewModelScope,
@@ -218,6 +229,27 @@ class DevicesViewModel @Inject constructor(
         }
     }
 
+    fun onDirectTalkPressed(device: Device) {
+        if (!device.isPaired || !device.isOnline) {
+            actionMessage.value = "${device.name} is not online"
+            return
+        }
+        viewModelScope.launch {
+            val granted = talkController.requestTalk(targetDeviceId = device.id)
+            HomeTalkLog.i(LogArea.UI, "Direct PTT to ${device.name} granted=$granted")
+            if (!granted) {
+                actionMessage.value = "Could not talk to ${device.name} (unreachable)"
+            }
+        }
+    }
+
+    fun onDirectTalkReleased() {
+        viewModelScope.launch {
+            talkController.releaseTalk()
+            HomeTalkLog.i(LogArea.UI, "Direct PTT released")
+        }
+    }
+
     fun consumeActionMessage() {
         actionMessage.update { null }
     }
@@ -228,5 +260,12 @@ class DevicesViewModel @Inject constructor(
         val manualVisible: Boolean,
         val manualHost: String,
         val manualPin: String,
+    )
+
+    private data class ExtrasSlice(
+        val message: String?,
+        val busy: Boolean,
+        val settings: UserSettings,
+        val talkingToDeviceId: String?,
     )
 }

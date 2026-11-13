@@ -32,12 +32,16 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.hometalk.app.domain.model.Device
 import com.hometalk.app.presentation.components.DeviceRow
 import com.hometalk.app.presentation.components.QrCodeImage
 import com.hometalk.app.presentation.components.SectionCard
@@ -59,9 +63,12 @@ fun DevicesScreen(
     onManualPinChanged: (String) -> Unit,
     onConfirmManualPair: () -> Unit,
     onUnpair: (com.hometalk.app.domain.model.Device) -> Unit,
+    onDirectTalkPress: (com.hometalk.app.domain.model.Device) -> Unit,
+    onDirectTalkRelease: () -> Unit,
     onActionMessageShown: () -> Unit,
 ) {
     val snackbarHostState = remember { SnackbarHostState() }
+    var pendingRemoveDevice by remember { mutableStateOf<Device?>(null) }
     LaunchedEffect(state.actionMessage) {
         val message = state.actionMessage ?: return@LaunchedEffect
         snackbarHostState.showSnackbar(message)
@@ -176,16 +183,51 @@ fun DevicesScreen(
                     }
                 }
             } else {
+                item {
+                    Text(
+                        text = "Hold a paired online phone to talk privately. Both sides can speak at once. Home Talk still speaks to everyone.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 items(state.devices, key = { it.id }) { device ->
                     DeviceRow(
                         device = device,
                         onPair = onOpenPairDialog,
-                        onUnpair = onUnpair,
+                        onUnpair = { pendingRemoveDevice = it },
+                        onTalkPress = onDirectTalkPress,
+                        onTalkRelease = onDirectTalkRelease,
+                        isTalkingToThisDevice = state.talkingToDeviceId == device.id,
                     )
                     HorizontalDivider()
                 }
             }
         }
+    }
+
+    pendingRemoveDevice?.let { device ->
+        AlertDialog(
+            onDismissRequest = { pendingRemoveDevice = null },
+            title = { Text("Remove ${device.name}?") },
+            text = {
+                Text("They will no longer be able to talk with you until you pair again.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingRemoveDevice = null
+                        onUnpair(device)
+                    },
+                ) {
+                    Text("Remove")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRemoveDevice = null }) {
+                    Text("Cancel")
+                }
+            },
+        )
     }
 
     state.showPairDialogFor?.let { device ->

@@ -19,7 +19,7 @@ Progress notes and known limits: [DEVELOPMENT.md](DEVELOPMENT.md)
 
 ### Core
 - Push-to-talk (hold Talk in the app)
-- Half-duplex channel (one speaker at a time)
+- Full-duplex talk (both sides can speak at once)
 - Live Opus voice between paired phones on the same LAN
 - Loudspeaker playback by default
 - Mute / unmute speaker in-app

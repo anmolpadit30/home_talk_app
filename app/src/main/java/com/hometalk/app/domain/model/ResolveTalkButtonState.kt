@@ -12,6 +12,7 @@ object ResolveTalkButtonState {
         val channelReady = hasOnlinePairedPeer || pttUiPreview
         if (!channelReady) return TalkButtonState.Disconnected
         if (isTransmitting) return TalkButtonState.Transmitting
+        // Kept for tests / legacy; duplex UI never passes true.
         if (isChannelBusy) return TalkButtonState.Busy
         return TalkButtonState.Idle
     }

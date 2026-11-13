@@ -4,7 +4,6 @@ import com.hometalk.app.domain.model.NetworkDefaults
 import com.hometalk.app.domain.model.PairingQrPayload
 import java.net.URLDecoder
 import java.net.URLEncoder
-import java.nio.charset.StandardCharsets
 
 object PairingQrCodec {
     private const val PREFIX = "hometalk://pair?"
@@ -51,9 +50,10 @@ object PairingQrCodec {
         )
     }
 
+    // String charset overload is available on API 26+; Charset overload requires API 33+.
     private fun urlEncode(value: String): String =
-        URLEncoder.encode(value, StandardCharsets.UTF_8).replace("+", "%20")
+        URLEncoder.encode(value, "UTF-8").replace("+", "%20")
 
     private fun urlDecode(value: String): String =
-        URLDecoder.decode(value, StandardCharsets.UTF_8)
+        URLDecoder.decode(value, "UTF-8")
 }

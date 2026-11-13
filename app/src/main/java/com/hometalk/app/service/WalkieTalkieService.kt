@@ -1,7 +1,10 @@
 package com.hometalk.app.service
 
 import android.app.Service
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.Build
@@ -11,9 +14,11 @@ import androidx.core.content.ContextCompat
 import com.hometalk.app.di.ApplicationScope
 import com.hometalk.app.di.IoDispatcher
 import com.hometalk.app.domain.model.ChannelState
+import com.hometalk.app.domain.model.NetworkDefaults
 import com.hometalk.app.domain.model.PhaseConfig
 import com.hometalk.app.domain.repository.ConnectionRepository
 import com.hometalk.app.domain.repository.DeviceRegistryRepository
+import com.hometalk.app.domain.repository.DiscoveryController
 import com.hometalk.app.domain.repository.SettingsRepository
 import com.hometalk.app.domain.repository.TalkController
 import com.hometalk.app.presentation.permissions.AppPermissions
@@ -23,6 +28,7 @@ import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
@@ -32,15 +38,19 @@ import javax.inject.Inject
 class WalkieTalkieService : Service() {
 
     @Inject lateinit var talkController: TalkController
+    @Inject lateinit var discoveryController: DiscoveryController
     @Inject lateinit var deviceRegistryRepository: DeviceRegistryRepository
     @Inject lateinit var connectionRepository: ConnectionRepository
     @Inject lateinit var settingsRepository: SettingsRepository
     @Inject lateinit var notificationManager: HomeTalkNotificationManager
     @Inject lateinit var wifiSleepCoordinator: WifiSleepCoordinator
+    @Inject lateinit var powerKeepAlive: ServicePowerKeepAlive
     @Inject @ApplicationScope lateinit var appScope: CoroutineScope
     @Inject @IoDispatcher lateinit var ioDispatcher: CoroutineDispatcher
 
     private var observeJob: Job? = null
+    private var keepAliveJob: Job? = null
+    private var screenReceiverRegistered = false
     private var latestSnapshot: NotificationSnapshot = NotificationSnapshot(
         wifiConnected = false,
         connectedCount = 0,
@@ -51,14 +61,48 @@ class WalkieTalkieService : Service() {
         notificationsEnabled = true,
     )
 
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val action = intent?.action ?: return
+            when (action) {
+                Intent.ACTION_SCREEN_OFF -> {
+                    HomeTalkLog.i(LogArea.SERVICE, "Screen off — locking listen path awake")
+                    appScope.launch(ioDispatcher) {
+                        // Grab locks + fresh UDP/AudioTrack before OEM deep-sleep settles in.
+                        refreshListenPath(
+                            probePeers = true,
+                            hardRestartUdp = true,
+                            forceRebuildPlayback = true,
+                        )
+                    }
+                }
+                Intent.ACTION_SCREEN_ON,
+                Intent.ACTION_USER_PRESENT,
+                -> {
+                    HomeTalkLog.i(LogArea.SERVICE, "Screen awake ($action) — refreshing listen path")
+                    appScope.launch(ioDispatcher) {
+                        refreshListenPath(
+                            probePeers = true,
+                            hardRestartUdp = true,
+                            forceRebuildPlayback = true,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         HomeTalkLog.i(LogArea.SERVICE, "WalkieTalkieService created")
         notificationManager.ensureChannel()
+        powerKeepAlive.acquire()
         promoteToForeground(latestSnapshot)
+        registerScreenReceiver()
         observeJob = appScope.launch(ioDispatcher) { observeAndUpdateNotification() }
+        keepAliveJob = appScope.launch(ioDispatcher) { keepAliveLoop() }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -83,20 +127,71 @@ class WalkieTalkieService : Service() {
                 HomeTalkLog.i(LogArea.SERVICE, "Notification mute/unmute tapped")
                 appScope.launch(ioDispatcher) { handleToggleSpeaker() }
             }
-            else -> promoteToForeground(latestSnapshot)
+            ServiceActions.ACTION_REFRESH_LISTEN -> {
+                HomeTalkLog.i(LogArea.SERVICE, "Refresh listen requested")
+                appScope.launch(ioDispatcher) {
+                    refreshListenPath(
+                        probePeers = true,
+                        hardRestartUdp = true,
+                        forceRebuildPlayback = true,
+                    )
+                }
+            }
+            else -> {
+                powerKeepAlive.acquire()
+                promoteToForeground(latestSnapshot)
+            }
         }
         return START_STICKY
     }
 
     override fun onDestroy() {
+        keepAliveJob?.cancel()
+        keepAliveJob = null
         observeJob?.cancel()
         observeJob = null
+        unregisterScreenReceiver()
+        powerKeepAlive.release()
         appScope.launch(ioDispatcher) {
             runCatching { talkController.releaseTalk() }
         }
         notificationManager.cancel()
         HomeTalkLog.i(LogArea.SERVICE, "WalkieTalkieService destroyed")
         super.onDestroy()
+    }
+
+    private suspend fun keepAliveLoop() {
+        var tick = 0
+        while (true) {
+            delay(NetworkDefaults.LISTEN_KEEPALIVE_INTERVAL_MS)
+            if (latestSnapshot.sleepState is WifiSleepState.Sleeping) continue
+            tick++
+            // Hard UDP every cycle (restart is race-safe). Rebuild AudioTrack often —
+            // Vivo/Realme pause silent MEDIA tracks after a few minutes screen-off.
+            refreshListenPath(
+                probePeers = tick % 2 == 0,
+                hardRestartUdp = true,
+                forceRebuildPlayback = tick % 2 == 0,
+            )
+        }
+    }
+
+    private suspend fun refreshListenPath(
+        probePeers: Boolean,
+        hardRestartUdp: Boolean,
+        forceRebuildPlayback: Boolean = false,
+    ) {
+        powerKeepAlive.acquire()
+        runCatching {
+            talkController.refreshListening(
+                hardRestartUdp = hardRestartUdp,
+                forceRebuildPlayback = forceRebuildPlayback,
+            )
+        }.onFailure { HomeTalkLog.w(LogArea.SERVICE, "refreshListening failed", it) }
+        if (probePeers) {
+            runCatching { discoveryController.refresh() }
+        }
+        promoteToForeground(latestSnapshot)
     }
 
     private suspend fun observeAndUpdateNotification() {
@@ -132,6 +227,7 @@ class WalkieTalkieService : Service() {
                 stopSelfSafely()
                 return@collectLatest
             }
+            powerKeepAlive.acquire()
             promoteToForeground(snapshot)
         }
     }
@@ -144,6 +240,11 @@ class WalkieTalkieService : Service() {
             if (launch != null) startActivity(launch)
             return
         }
+        refreshListenPath(
+            probePeers = false,
+            hardRestartUdp = false,
+            forceRebuildPlayback = false,
+        )
         promoteToForeground(latestSnapshot.copy(isTransmitting = true))
         val granted = talkController.requestTalk()
         HomeTalkLog.i(LogArea.SERVICE, "Notification Talk granted=$granted")
@@ -200,9 +301,39 @@ class WalkieTalkieService : Service() {
         return type
     }
 
+    private fun registerScreenReceiver() {
+        if (screenReceiverRegistered) return
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_USER_PRESENT)
+        }
+        runCatching {
+            ContextCompat.registerReceiver(
+                this,
+                screenReceiver,
+                filter,
+                ContextCompat.RECEIVER_NOT_EXPORTED,
+            )
+            screenReceiverRegistered = true
+        }.onFailure {
+            HomeTalkLog.w(LogArea.SERVICE, "Screen receiver register failed", it)
+        }
+    }
+
+    private fun unregisterScreenReceiver() {
+        if (!screenReceiverRegistered) return
+        runCatching { unregisterReceiver(screenReceiver) }
+        screenReceiverRegistered = false
+    }
+
     private fun stopSelfSafely() {
+        keepAliveJob?.cancel()
+        keepAliveJob = null
         observeJob?.cancel()
         observeJob = null
+        unregisterScreenReceiver()
+        powerKeepAlive.release()
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         notificationManager.cancel()
         stopSelf()

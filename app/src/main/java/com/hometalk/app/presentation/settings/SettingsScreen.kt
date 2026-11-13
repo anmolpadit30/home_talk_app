@@ -1,5 +1,9 @@
 package com.hometalk.app.presentation.settings
 
+import android.content.Intent
+import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,6 +17,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
@@ -24,14 +29,17 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
@@ -55,9 +63,14 @@ fun SettingsScreen(
     onUnpair: (String) -> Unit,
     onBackgroundServiceChange: (Boolean) -> Unit,
 ) {
+    val context = LocalContext.current
     var deviceName by rememberSaveable(settings.deviceId) { mutableStateOf(settings.deviceName) }
     var roomName by rememberSaveable(settings.roomId) { mutableStateOf(settings.roomName) }
     var peerDraft by rememberSaveable { mutableStateOf("") }
+    var pendingRemoveDevice by remember { mutableStateOf<PairedDeviceRecord?>(null) }
+    val powerManager = context.getSystemService(PowerManager::class.java)
+    val ignoringBatteryOptimizations =
+        powerManager?.isIgnoringBatteryOptimizations(context.packageName) == true
 
     Scaffold(
         topBar = { TopAppBar(title = { Text("Settings") }) },
@@ -203,7 +216,7 @@ fun SettingsScreen(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
-                            IconButton(onClick = { onUnpair(device.id) }) {
+                            IconButton(onClick = { pendingRemoveDevice = device }) {
                                 Icon(Icons.Outlined.Delete, contentDescription = "Remove ${device.name}")
                             }
                         }
@@ -223,10 +236,87 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = if (ignoringBatteryOptimizations) {
+                        "Battery use is unrestricted for HomeTalk."
+                    } else {
+                        "On Realme / Oppo / Motorola, allow unrestricted battery so audio still works after the screen has been off for a while."
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        val intent = Intent(
+                            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        ).apply {
+                            data = Uri.parse("package:${context.packageName}")
+                        }
+                        runCatching { context.startActivity(intent) }
+                            .onFailure {
+                                context.startActivity(
+                                    Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+                                )
+                            }
+                    },
+                ) {
+                    Text(
+                        if (ignoringBatteryOptimizations) {
+                            "Battery already unrestricted"
+                        } else {
+                            "Allow unrestricted battery"
+                        },
+                    )
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        context.startActivity(
+                            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                data = Uri.parse("package:${context.packageName}")
+                            },
+                        )
+                    },
+                ) {
+                    Text("Open app settings (Autostart)")
+                }
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Realme: Battery → Unrestricted, then turn on Autostart / Allow background activity if available. Also lock HomeTalk in Recents.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             Spacer(modifier = Modifier.height(24.dp))
         }
+    }
+
+    pendingRemoveDevice?.let { device ->
+        AlertDialog(
+            onDismissRequest = { pendingRemoveDevice = null },
+            title = { Text("Remove ${device.name}?") },
+            text = {
+                Text("They will no longer be able to talk with you until you pair again.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        pendingRemoveDevice = null
+                        onUnpair(device.id)
+                    },
+                ) {
+                    Text("Remove")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRemoveDevice = null }) {
+                    Text("Cancel")
+                }
+            },
+        )
     }
 }
 

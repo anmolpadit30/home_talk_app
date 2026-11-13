@@ -77,4 +77,19 @@ class ServiceControllerImpl @Inject constructor(
             HomeTalkLog.i(LogArea.SERVICE, "ServiceController stopTalk")
         }
     }
+
+    override fun refreshListening() {
+        val intent = Intent(context, WalkieTalkieService::class.java).apply {
+            action = ServiceActions.ACTION_REFRESH_LISTEN
+        }
+        runCatching {
+            context.startService(intent)
+            HomeTalkLog.i(LogArea.SERVICE, "Requested listen refresh")
+        }.onFailure { error ->
+            HomeTalkLog.e(LogArea.SERVICE, "Failed to request listen refresh", error)
+        }
+        appScope.launch(ioDispatcher) {
+            runCatching { talkController.refreshListening() }
+        }
+    }
 }

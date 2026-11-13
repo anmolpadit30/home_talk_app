@@ -33,4 +33,9 @@ class NetworkDefaultsTest {
     fun wifiSleepIsTenMinutes() {
         assertEquals(10 * 60_000L, NetworkDefaults.WIFI_SLEEP_AFTER_MS)
     }
+
+    @Test
+    fun remoteAudioIdleClearIsAtLeastTwoSeconds() {
+        assertTrue(NetworkDefaults.REMOTE_AUDIO_IDLE_CLEAR_MS >= 2_000L)
+    }
 }

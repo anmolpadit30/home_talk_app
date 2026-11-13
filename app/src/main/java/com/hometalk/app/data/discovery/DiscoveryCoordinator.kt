@@ -19,6 +19,7 @@ import com.hometalk.app.domain.repository.PairedDevicesRepository
 import com.hometalk.app.domain.repository.SettingsRepository
 import com.hometalk.app.domain.repository.TalkController
 import com.hometalk.app.util.HomeTalkLog
+import com.hometalk.app.util.LanHosts
 import com.hometalk.app.util.LocalIpv4
 import com.hometalk.app.util.LogArea
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -270,6 +271,14 @@ class DiscoveryCoordinator @Inject constructor(
     private suspend fun seedPairedDevicesOffline() {
         val paired = pairedDevicesRepository.getSnapshot()
         paired.forEach { record ->
+            val usableHost = record.hostAddress?.takeIf { LanHosts.isUsable(it) }
+            if (record.hostAddress != null && usableHost == null) {
+                HomeTalkLog.w(
+                    LogArea.DISCOVERY,
+                    "Scrubbing stale peer host ${record.hostAddress} for ${record.name}",
+                )
+                pairedDevicesRepository.upsert(record.copy(hostAddress = null))
+            }
             deviceRegistryRepository.upsert(
                 Device(
                     id = record.id,
@@ -277,7 +286,7 @@ class DiscoveryCoordinator @Inject constructor(
                     isOnline = false,
                     isPaired = true,
                     lastSeenEpochMs = record.lastSeenEpochMs,
-                    hostAddress = record.hostAddress,
+                    hostAddress = usableHost,
                     controlPort = record.controlPort,
                 ),
             )
@@ -490,10 +499,11 @@ class DiscoveryCoordinator @Inject constructor(
         )
     }
 
-    private suspend fun helloProbe(host: String, port: Int) {
+    private suspend fun helloProbe(host: String, port: Int): Boolean {
+        if (!LanHosts.isUsable(host)) return false
         val settings = settingsRepository.settings.first()
-        if (settings.deviceId.isBlank()) return
-        val response = tcpControlClient.exchange(
+        if (settings.deviceId.isBlank()) return false
+        val result = tcpControlClient.exchange(
             host = host,
             port = port,
             message = ControlMessage.Hello(
@@ -502,7 +512,8 @@ class DiscoveryCoordinator @Inject constructor(
                 roomId = settings.roomId,
                 roomName = settings.roomName,
             ),
-        ).getOrNull()
+        )
+        val response = result.getOrNull()
         if (response is ControlMessage.HelloAck) {
             upsertFromHello(
                 ControlMessage.Hello(
@@ -516,7 +527,6 @@ class DiscoveryCoordinator @Inject constructor(
                 remoteHost = host,
             )
             if (response.paired || pairedDevicesRepository.isPaired(response.deviceId)) {
-                // Ensure pairing flag is reflected even if only one side had stored it.
                 val now = System.currentTimeMillis()
                 deviceRegistryRepository.upsert(
                     Device(
@@ -530,7 +540,12 @@ class DiscoveryCoordinator @Inject constructor(
                     ),
                 )
             }
+            return true
         }
+        if (result.isFailure) {
+            clearStaleHost(host)
+        }
+        return false
     }
 
     private suspend fun maintenanceLoop() {
@@ -572,9 +587,21 @@ class DiscoveryCoordinator @Inject constructor(
         settings.manualPeerAddresses.forEach { hosts += it }
         val localIp = lastLocalIpv4 ?: LocalIpv4.resolve(context)
         hosts
-            .filter { it.isNotBlank() && it != localIp }
-            .forEach { host ->
-                helloProbe(host, NetworkDefaults.TCP_CONTROL_PORT)
+            .filter { LanHosts.isUsable(it) && it != localIp }
+            .forEach { host -> helloProbe(host, NetworkDefaults.TCP_CONTROL_PORT) }
+    }
+
+    private suspend fun clearStaleHost(host: String) {
+        deviceRegistryRepository.devices.first()
+            .filter { it.hostAddress == host }
+            .forEach { device ->
+                HomeTalkLog.w(LogArea.DISCOVERY, "Clearing unreachable host=$host for ${device.name}")
+                deviceRegistryRepository.upsert(device.copy(isOnline = false, hostAddress = null))
+                if (device.isPaired) {
+                    val existing = pairedDevicesRepository.getSnapshot()
+                        .firstOrNull { it.id == device.id } ?: return@forEach
+                    pairedDevicesRepository.upsert(existing.copy(hostAddress = null))
+                }
             }
     }
 

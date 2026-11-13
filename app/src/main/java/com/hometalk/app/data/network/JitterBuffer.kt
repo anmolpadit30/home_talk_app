@@ -6,7 +6,7 @@ import java.util.TreeMap
  * Small sequence-ordered jitter buffer. Drops late/duplicate packets.
  */
 class JitterBuffer(
-    private val capacity: Int = 8,
+    private val capacity: Int = 12,
 ) {
     private val packets = TreeMap<Int, PacketProtocol.AudioPacket>()
     private var nextSequence: Int? = null

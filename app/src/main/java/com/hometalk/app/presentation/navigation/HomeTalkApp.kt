@@ -113,6 +113,8 @@ fun HomeTalkApp() {
                     onManualPinChanged = viewModel::onManualPinChanged,
                     onConfirmManualPair = viewModel::confirmManualPair,
                     onUnpair = viewModel::unpair,
+                    onDirectTalkPress = viewModel::onDirectTalkPressed,
+                    onDirectTalkRelease = viewModel::onDirectTalkReleased,
                     onActionMessageShown = viewModel::consumeActionMessage,
                 )
             }

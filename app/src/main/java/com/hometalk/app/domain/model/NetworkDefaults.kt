@@ -16,8 +16,8 @@ object NetworkDefaults {
     const val HEARTBEAT_INTERVAL_MS = 2_000L
     const val PEER_TIMEOUT_MS = 8_000L
     const val TRANSMISSION_LEASE_MS = 30_000L
-    /** Clear a remote "busy" lock if no audio arrives for this long. */
-    const val REMOTE_AUDIO_IDLE_CLEAR_MS = 1_500L
+    /** Clear a remote "busy" lock if audio was flowing and then stops for this long. */
+    const val REMOTE_AUDIO_IDLE_CLEAR_MS = 2_500L
     const val PAIRING_PIN_LENGTH = 6
     const val PAIRING_SESSION_TTL_MS = 5 * 60_000L
     const val TCP_CONNECT_TIMEOUT_MS = 3_000
@@ -28,4 +28,6 @@ object NetworkDefaults {
     /** Burst of peer probes right after Wi-Fi returns or the local IP changes. */
     const val RECONNECT_PROBE_BURST = 3
     const val RECONNECT_PROBE_GAP_MS = 1_000L
+    /** Refresh UDP/AudioTrack/locks while screen is off (Vivo/Realme). */
+    const val LISTEN_KEEPALIVE_INTERVAL_MS = 12_000L
 }

@@ -30,5 +30,7 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         serviceController.startService()
+        // Realme/ColorOS: revive UDP/audio path when user returns to the app.
+        serviceController.refreshListening()
     }
 }

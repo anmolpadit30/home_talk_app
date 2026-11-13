@@ -29,6 +29,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import android.content.Intent
+import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -54,6 +58,9 @@ fun HomeScreen(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val powerManager = context.getSystemService(PowerManager::class.java)
+    val ignoringBatteryOptimizations =
+        powerManager?.isIgnoringBatteryOptimizations(context.packageName) == true
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions(),
     ) {
@@ -102,6 +109,28 @@ fun HomeScreen(
                     actionLabel = "Allow notifications",
                     onAction = {
                         permissionLauncher.launch(AppPermissions.requiredRuntimePermissions())
+                    },
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+            } else if (!ignoringBatteryOptimizations) {
+                PermissionBanner(
+                    title = "Allow background listening",
+                    body = "On Realme / Oppo, set HomeTalk battery use to Unrestricted (and Autostart if shown), or audio stops a few minutes after the screen locks.",
+                    actionLabel = "Fix battery setting",
+                    onAction = {
+                        val intent = Intent(
+                            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        ).apply {
+                            data = Uri.parse("package:${context.packageName}")
+                        }
+                        runCatching { context.startActivity(intent) }
+                            .onFailure {
+                                context.startActivity(
+                                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                        data = Uri.parse("package:${context.packageName}")
+                                    },
+                                )
+                            }
                     },
                 )
                 Spacer(modifier = Modifier.height(16.dp))
@@ -181,8 +210,13 @@ fun HomeScreen(
     }
 }
 
-private fun transmitterLabel(state: HomeUiState): String = when {
-    state.talkButtonState == TalkButtonState.Transmitting -> "You are transmitting"
-    state.currentTransmitterName != null -> "${state.currentTransmitterName} is talking"
-    else -> "No one is talking"
+private fun transmitterLabel(state: HomeUiState): String {
+    val remote = state.currentTransmitterName
+    val localTx = state.talkButtonState == TalkButtonState.Transmitting
+    return when {
+        localTx && remote != null -> "You and $remote (both talking)"
+        localTx -> "You are talking"
+        remote != null -> "$remote is talking"
+        else -> "Hold Talk — both sides can speak at once"
+    }
 }

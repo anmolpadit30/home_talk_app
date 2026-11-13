@@ -56,6 +56,28 @@ class AudioEngineImpl @Inject constructor(
         player.ensureLoudspeaker()
     }
 
+    /**
+     * Called from OEM keepalive after long screen-off (Vivo/Realme).
+     * @param forceRebuild always recreate AudioTrack — silent MEDIA tracks get paused by OEMs.
+     */
+    fun ensurePlaybackAlive(forceRebuild: Boolean = false) {
+        if (!playing.get()) return
+        requestAudioFocus()
+        forceLoudspeaker()
+        val needsRebuild = forceRebuild || !player.ensurePlaying()
+        if (needsRebuild) {
+            HomeTalkLog.w(LogArea.AUDIO, "AudioTrack rebuild force=$forceRebuild")
+            player.stop()
+            decoder.open()
+            if (player.forceRebuild()) {
+                forceLoudspeaker()
+                player.ensureLoudspeaker()
+            }
+        } else {
+            player.ensureLoudspeaker()
+        }
+    }
+
     override suspend fun startPlayback() {
         if (!playing.compareAndSet(false, true)) return
         configureCommunicationAudio()
@@ -179,14 +201,25 @@ class AudioEngineImpl @Inject constructor(
 
     private fun requestAudioFocus() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+            val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                 .setAudioAttributes(
                     android.media.AudioAttributes.Builder()
                         .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
                         .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH)
                         .build(),
                 )
-                .setOnAudioFocusChangeListener { }
+                .setOnAudioFocusChangeListener { change ->
+                    when (change) {
+                        AudioManager.AUDIOFOCUS_GAIN -> {
+                            HomeTalkLog.i(LogArea.AUDIO, "Audio focus gained")
+                            forceLoudspeaker()
+                            player.ensureLoudspeaker()
+                        }
+                        AudioManager.AUDIOFOCUS_LOSS,
+                        AudioManager.AUDIOFOCUS_LOSS_TRANSIENT,
+                        -> HomeTalkLog.w(LogArea.AUDIO, "Audio focus lost change=$change")
+                    }
+                }
                 .build()
             focusRequest = request
             audioManager.requestAudioFocus(request)
@@ -195,7 +228,7 @@ class AudioEngineImpl @Inject constructor(
             audioManager.requestAudioFocus(
                 null,
                 AudioManager.STREAM_MUSIC,
-                AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK,
+                AudioManager.AUDIOFOCUS_GAIN,
             )
         }
     }

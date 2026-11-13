@@ -124,10 +124,15 @@ class HomeViewModel @Inject constructor(
                 "Paired phones are unreachable. They may be offline or on another network."
             online.isEmpty() ->
                 "Waiting for paired family members. Open Family to discover and pair phones."
-            isLocallyTransmitting -> "You are transmitting"
-            channel.currentTransmitterName != null ->
-                "${channel.currentTransmitterName} is talking"
-            else -> "Hold Talk to speak to everyone."
+            isLocallyTransmitting &&
+                channel.currentTransmitterName != null &&
+                channel.currentTransmitterId != settings.deviceId ->
+                "You and ${channel.currentTransmitterName} are both talking"
+            isLocallyTransmitting -> "You are talking — they can talk at the same time"
+            channel.currentTransmitterName != null &&
+                channel.currentTransmitterId != settings.deviceId ->
+                "${channel.currentTransmitterName} is talking — hold Talk to reply"
+            else -> "Hold Talk to speak. Both sides can talk at the same time."
         }
         return HomeUiState(
             isLoading = settings.deviceId.isBlank(),

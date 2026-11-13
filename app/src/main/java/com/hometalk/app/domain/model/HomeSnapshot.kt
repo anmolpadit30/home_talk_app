@@ -18,10 +18,8 @@ data class HomeSnapshot(
             wifiConnected = wifiConnected,
             hasOnlinePairedPeer = onlinePairedDevices.isNotEmpty(),
             isTransmitting = isLocallyTransmitting,
-            // Only another phone holding the channel is "busy".
-            isChannelBusy = channel.isBusy &&
-                channel.currentTransmitterId != null &&
-                channel.currentTransmitterId != settings.deviceId,
+            // Full duplex: never lock the Talk button because someone else is speaking.
+            isChannelBusy = false,
             pttUiPreview = PhaseConfig.PTT_UI_PREVIEW,
         )
 }

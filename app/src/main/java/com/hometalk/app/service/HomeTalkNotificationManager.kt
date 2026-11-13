@@ -117,11 +117,13 @@ class HomeTalkNotificationManager @Inject constructor(
             snapshot.connectedCount <= 0 -> "Listening · no paired phones online"
             else -> "Listening · ${snapshot.connectedCount} connected"
         }
+        val remoteName = snapshot.channel.currentTransmitterName
         val transmitter = when {
-            snapshot.isTransmitting -> "You are transmitting"
-            snapshot.channel.currentTransmitterName != null ->
-                "${snapshot.channel.currentTransmitterName} is talking"
-            else -> "Channel free · tap Talk to speak"
+            snapshot.isTransmitting && remoteName != null ->
+                "You + $remoteName (both talking)"
+            snapshot.isTransmitting -> "You are talking"
+            remoteName != null -> "$remoteName is talking"
+            else -> "Ready · hold Talk (both can speak)"
         }
         val speaker = if (snapshot.speakerEnabled) "Speaker on" else "Speaker muted"
         return "$connection\n$transmitter\n$speaker"

@@ -9,4 +9,5 @@ interface ServiceController {
     fun stopService()
     fun startTalk()
     fun stopTalk()
+    fun refreshListening()
 }
